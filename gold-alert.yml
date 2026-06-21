@@ -1,0 +1,44 @@
+name: Gold Signal Alert
+
+on:
+  schedule:
+    # รันทุก 15 นาที (เวลา GitHub อาจดีเลย์ได้บ้างในช่วงคนใช้เยอะ)
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}   # กดรันเองได้จากหน้า Actions
+
+permissions:
+  contents: write          # ให้สิทธิ์ commit ไฟล์สถานะกลับ
+
+concurrency:
+  group: gold-alert
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run alert check
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TIMEFRAME: "1h"
+        run: python gold_alert.py
+
+      - name: Persist last signal state
+        run: |
+          if [ -n "$(git status --porcelain last_signal.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add last_signal.json
+            git commit -m "update signal state [skip ci]"
+            git push
+          else
+            echo "state ไม่เปลี่ยน — ไม่ต้อง commit"
+          fi
