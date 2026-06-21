@@ -147,7 +147,7 @@ def send_summary(sig):
         f"ไทม์เฟรม {TIMEFRAME}  ·  คะแนน {sig['score']}\n\n"
         f"(ข้อความสรุปประจำวัน — จะแจ้งเตือนจริงเฉพาะตอนมีจุดเข้า)"
     )
-    return post_ntfy("Gold: สรุปสถานะรายวัน", body, "low", "bar_chart")
+    return post_ntfy("Gold: Daily Summary", body, "low", "bar_chart")
 
 def main():
     if not NTFY_TOPIC:
