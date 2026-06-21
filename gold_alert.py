@@ -2,25 +2,28 @@
 """
 GoldSignal alert -> ntfy.sh
 อ่านราคาทองคำล่วงหน้า (GC=F จาก Yahoo Finance) คำนวณ RSI/EMA/MACD สร้างสัญญาณ ซื้อ/ขาย/รอ
-แล้วส่งแจ้งเตือนเข้ามือถือผ่าน ntfy.sh "เฉพาะตอนสัญญาณเปลี่ยน" (ไม่สแปม)
+แล้วส่งแจ้งเตือนเข้ามือถือผ่าน ntfy.sh
 
-ใช้ Yahoo Finance เพราะรันได้จากเซิร์ฟเวอร์ GitHub (สหรัฐ) ซึ่ง Binance มักโดนบล็อก (451)
+โหมดการทำงาน (env MODE):
+  alert   (ค่าเริ่มต้น) ส่งเฉพาะตอนมีจุดเข้า BUY/SELL ใหม่ — WAIT จะเงียบสนิท
+  summary สรุปสถานะปัจจุบัน ส่งเสมอ (ใช้กับ heartbeat รายวัน บอกว่าระบบยังทำงาน)
 
-ตั้งค่าผ่าน environment variables:
-  NTFY_TOPIC    (จำเป็น)  ชื่อ topic ของคุณ เช่น gold-9f3k2x-jareeya
+env อื่นๆ:
+  NTFY_TOPIC    (จำเป็น)  ชื่อ topic ของคุณ
   NTFY_SERVER   (ไม่บังคับ) ค่าเริ่มต้น https://ntfy.sh
   TIMEFRAME     (ไม่บังคับ) ค่าเริ่มต้น 1h  เช่น 15m / 1h / 1d
   STATE_FILE    (ไม่บังคับ) ค่าเริ่มต้น last_signal.json
 """
 import os, sys, json, urllib.request
 
-# GC=F = ทองคำล่วงหน้า COMEX (ราคา/ออนซ์ ใกล้เคียงราคาทองจริง)
-# map ไทม์เฟรม -> (interval, range) ที่ Yahoo รองรับ
 YF = {"15m": ("15m", "5d"), "1h": ("60m", "1mo"), "4h": ("60m", "1mo"), "1d": ("1d", "6mo")}
+MODE        = os.environ.get("MODE", "alert")
 TIMEFRAME   = os.environ.get("TIMEFRAME", "1h")
 STATE_FILE  = os.environ.get("STATE_FILE", "last_signal.json")
 NTFY_TOPIC  = os.environ.get("NTFY_TOPIC")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+
+BUY, SELL, WAIT = "ซื้อ (BUY)", "ขาย (SELL)", "รอ (WAIT)"
 
 # ---------- indicators ----------
 def ema(values, period):
@@ -85,9 +88,9 @@ def build_signal(closes):
     else:                  score -= 5;  reasons.append("MACD ยังลบแต่ชะลอ")
 
     conf = min(100, abs(score) / 85 * 100)
-    if score >= 35:    label, tag, title, prio = "ซื้อ (BUY)",  "green_circle",  "Gold: BUY",  "high"
-    elif score <= -35: label, tag, title, prio = "ขาย (SELL)",  "red_circle",    "Gold: SELL", "high"
-    else:              label, tag, title, prio, conf = "รอ (WAIT)", "yellow_circle", "Gold: WAIT", "default", max(15, conf)
+    if score >= 35:    label, tag, title, prio = BUY,  "green_circle",  "Gold: BUY",  "high"
+    elif score <= -35: label, tag, title, prio = SELL, "red_circle",    "Gold: SELL", "high"
+    else:              label, tag, title, prio, conf = WAIT, "yellow_circle", "Gold: WAIT", "default", max(15, conf)
 
     return {"last": last, "rsi": r, "label": label, "tag": tag, "title": title,
             "prio": prio, "score": score, "conf": round(conf), "reasons": reasons}
@@ -105,7 +108,7 @@ def fetch_closes(tf):
     closes = [float(c) for c in closes if c is not None]
     if len(closes) < 30:
         raise RuntimeError(f"ข้อมูลราคาน้อยเกินไป ({len(closes)} แท่ง)")
-    return closes[:-1]  # ตัดแท่งล่าสุดที่ยังไม่ปิด เพื่อให้สัญญาณนิ่ง
+    return closes[:-1]  # ตัดแท่งล่าสุดที่ยังไม่ปิด
 
 def load_state():
     try:
@@ -118,21 +121,33 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def send_ntfy(sig):
+def post_ntfy(title, body, prio, tag):
+    url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
+    req = urllib.request.Request(url, data=body.encode("utf-8"), method="POST")
+    req.add_header("Title", title)       # ASCII เท่านั้น
+    req.add_header("Priority", prio)
+    req.add_header("Tags", tag)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.status in (200, 201)
+
+def send_alert(sig):
     reasons = "\n".join(f"• {x}" for x in sig["reasons"])
     body = (
         f"{sig['label']}  ·  ความเชื่อมั่น {sig['conf']}/100\n"
         f"ไทม์เฟรม {TIMEFRAME}  ·  ราคา ≈ ${sig['last']:,.2f}/oz\n\n"
         f"{reasons}\n\n"
         f"เครื่องมือช่วยวิเคราะห์ ไม่ใช่คำแนะนำลงทุน · ตั้ง Stop-Loss เสมอ"
-    ).encode("utf-8")
-    url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Title", sig["title"])       # ASCII เท่านั้น
-    req.add_header("Priority", sig["prio"])
-    req.add_header("Tags", sig["tag"])
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.status in (200, 201)
+    )
+    return post_ntfy(sig["title"], body, sig["prio"], sig["tag"])
+
+def send_summary(sig):
+    body = (
+        f"ระบบทำงานปกติ ✅\n"
+        f"ตอนนี้: {sig['label']}  ·  ราคา ≈ ${sig['last']:,.2f}/oz\n"
+        f"ไทม์เฟรม {TIMEFRAME}  ·  คะแนน {sig['score']}\n\n"
+        f"(ข้อความสรุปประจำวัน — จะแจ้งเตือนจริงเฉพาะตอนมีจุดเข้า)"
+    )
+    return post_ntfy("Gold: สรุปสถานะรายวัน", body, "low", "bar_chart")
 
 def main():
     if not NTFY_TOPIC:
@@ -141,17 +156,18 @@ def main():
 
     closes = fetch_closes(TIMEFRAME)
     sig = build_signal(closes)
+    print(f"MODE={MODE} signal={sig['label']} score={sig['score']} price={sig['last']:.2f}")
+
+    if MODE == "summary":
+        print("สรุปสถานะรายวัน, ntfy sent:", send_summary(sig))
+        return
+
+    # โหมด alert: แจ้งเฉพาะ "จุดเข้า" จริง (BUY/SELL) ที่เป็นสัญญาณใหม่ — WAIT เงียบ
     state = load_state()
     prev_label = state.get("label")
-
-    print(f"signal={sig['label']} score={sig['score']} price={sig['last']:.2f} prev={prev_label}")
-
-    # แจ้งเฉพาะตอนมี "จุดเข้า" จริง (BUY/SELL) และเป็นสัญญาณใหม่เท่านั้น
-    # ถ้าเป็น WAIT จะเงียบสนิท ไม่รบกวน
-    is_entry = sig["label"] in ("ซื้อ (BUY)", "ขาย (SELL)")
+    is_entry = sig["label"] in (BUY, SELL)
     if is_entry and sig["label"] != prev_label:
-        ok = send_ntfy(sig)
-        print("ntfy sent:", ok)
+        print("ntfy sent:", send_alert(sig))
     elif not is_entry:
         print("สัญญาณเป็น WAIT — เงียบไว้ ไม่แจ้งจนกว่าจะมีจุดเข้า")
     else:
