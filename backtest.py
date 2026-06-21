@@ -104,7 +104,7 @@ def main():
         f"\n⚠️ จำลองในอุดมคติ ไม่หักค่าสเปรด/ค่าธรรมเนียม ผลจริงจะแย่กว่านี้"
     )
     print(report)
-    post_ntfy("Gold: ผลทดสอบย้อนหลัง", report)
+    post_ntfy("Gold: Backtest Result", report)
 
 if __name__ == "__main__":
     main()
