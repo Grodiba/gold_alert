@@ -146,11 +146,16 @@ def main():
 
     print(f"signal={sig['label']} score={sig['score']} price={sig['last']:.2f} prev={prev_label}")
 
-    if sig["label"] != prev_label:
+    # แจ้งเฉพาะตอนมี "จุดเข้า" จริง (BUY/SELL) และเป็นสัญญาณใหม่เท่านั้น
+    # ถ้าเป็น WAIT จะเงียบสนิท ไม่รบกวน
+    is_entry = sig["label"] in ("ซื้อ (BUY)", "ขาย (SELL)")
+    if is_entry and sig["label"] != prev_label:
         ok = send_ntfy(sig)
         print("ntfy sent:", ok)
+    elif not is_entry:
+        print("สัญญาณเป็น WAIT — เงียบไว้ ไม่แจ้งจนกว่าจะมีจุดเข้า")
     else:
-        print("ไม่มีการเปลี่ยนสัญญาณ — ไม่ส่งแจ้งเตือน")
+        print("ยังเป็นสัญญาณเดิม — ไม่แจ้งซ้ำ")
 
     save_state({"label": sig["label"], "score": sig["score"],
                 "price": sig["last"], "timeframe": TIMEFRAME})
