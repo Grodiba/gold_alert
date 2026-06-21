@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
 GoldSignal alert -> ntfy.sh
-อ่านราคาทอง (PAXG/USD จาก Binance) คำนวณ RSI/EMA/MACD สร้างสัญญาณ ซื้อ/ขาย/รอ
+อ่านราคาทองคำล่วงหน้า (GC=F จาก Yahoo Finance) คำนวณ RSI/EMA/MACD สร้างสัญญาณ ซื้อ/ขาย/รอ
 แล้วส่งแจ้งเตือนเข้ามือถือผ่าน ntfy.sh "เฉพาะตอนสัญญาณเปลี่ยน" (ไม่สแปม)
+
+ใช้ Yahoo Finance เพราะรันได้จากเซิร์ฟเวอร์ GitHub (สหรัฐ) ซึ่ง Binance มักโดนบล็อก (451)
 
 ตั้งค่าผ่าน environment variables:
   NTFY_TOPIC    (จำเป็น)  ชื่อ topic ของคุณ เช่น gold-9f3k2x-jareeya
   NTFY_SERVER   (ไม่บังคับ) ค่าเริ่มต้น https://ntfy.sh
-  TIMEFRAME     (ไม่บังคับ) ค่าเริ่มต้น 1h  เช่น 15m / 1h / 4h / 1d
+  TIMEFRAME     (ไม่บังคับ) ค่าเริ่มต้น 1h  เช่น 15m / 1h / 1d
   STATE_FILE    (ไม่บังคับ) ค่าเริ่มต้น last_signal.json
 """
 import os, sys, json, urllib.request
 
-SYMBOL     = "PAXGUSDT"
-TIMEFRAME  = os.environ.get("TIMEFRAME", "1h")
-STATE_FILE = os.environ.get("STATE_FILE", "last_signal.json")
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
+# GC=F = ทองคำล่วงหน้า COMEX (ราคา/ออนซ์ ใกล้เคียงราคาทองจริง)
+# map ไทม์เฟรม -> (interval, range) ที่ Yahoo รองรับ
+YF = {"15m": ("15m", "5d"), "1h": ("60m", "1mo"), "4h": ("60m", "1mo"), "1d": ("1d", "6mo")}
+TIMEFRAME   = os.environ.get("TIMEFRAME", "1h")
+STATE_FILE  = os.environ.get("STATE_FILE", "last_signal.json")
+NTFY_TOPIC  = os.environ.get("NTFY_TOPIC")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 
 # ---------- indicators ----------
@@ -90,12 +94,18 @@ def build_signal(closes):
 
 # ---------- IO ----------
 def fetch_closes(tf):
-    url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={tf}&limit=200"
-    req = urllib.request.Request(url, headers={"User-Agent": "gold-alert/1.0"})
+    interval, rng = YF.get(tf, ("60m", "1mo"))
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+           f"?interval={interval}&range={rng}")
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (gold-alert)"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        raw = json.loads(resp.read().decode())
-    # ใช้เฉพาะแท่งที่ปิดแล้ว เพื่อให้สัญญาณนิ่ง
-    return [float(c[4]) for c in raw[:-1]]
+        data = json.loads(resp.read().decode())
+    result = data["chart"]["result"][0]
+    closes = result["indicators"]["quote"][0]["close"]
+    closes = [float(c) for c in closes if c is not None]
+    if len(closes) < 30:
+        raise RuntimeError(f"ข้อมูลราคาน้อยเกินไป ({len(closes)} แท่ง)")
+    return closes[:-1]  # ตัดแท่งล่าสุดที่ยังไม่ปิด เพื่อให้สัญญาณนิ่ง
 
 def load_state():
     try:
@@ -118,7 +128,7 @@ def send_ntfy(sig):
     ).encode("utf-8")
     url = f"{NTFY_SERVER}/{NTFY_TOPIC}"
     req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Title", sig["title"])       # ASCII เท่านั้น (ntfy header)
+    req.add_header("Title", sig["title"])       # ASCII เท่านั้น
     req.add_header("Priority", sig["prio"])
     req.add_header("Tags", sig["tag"])
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -126,7 +136,7 @@ def send_ntfy(sig):
 
 def main():
     if not NTFY_TOPIC:
-        print("ERROR: ตั้งค่า NTFY_TOPIC ก่อน", file=sys.stderr)
+        print("ERROR: ยังไม่ได้ตั้งค่า NTFY_TOPIC (ไปใส่ใน repo Settings > Secrets)", file=sys.stderr)
         sys.exit(1)
 
     closes = fetch_closes(TIMEFRAME)
@@ -134,9 +144,8 @@ def main():
     state = load_state()
     prev_label = state.get("label")
 
-    print(f"signal={sig['label']} score={sig['score']} prev={prev_label}")
+    print(f"signal={sig['label']} score={sig['score']} price={sig['last']:.2f} prev={prev_label}")
 
-    # แจ้งเตือนเฉพาะตอนสัญญาณเปลี่ยน (รอบแรกก็ส่งสถานะปัจจุบัน)
     if sig["label"] != prev_label:
         ok = send_ntfy(sig)
         print("ntfy sent:", ok)
