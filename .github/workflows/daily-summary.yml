@@ -1,0 +1,26 @@
+name: Gold Daily Summary
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 น. เวลาไทย ส่งสรุปสถานะวันละครั้ง
+    - cron: "0 1 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  summary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Send daily summary
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TIMEFRAME: "1h"
+          MODE: "summary"
+        run: python gold_alert.py
